@@ -1,0 +1,41 @@
+# 桌面记忆（desktop-memory）—— bundle 补丁
+# ============================================================================
+# 这一行就是「把插件挂到配置树上」的挂载声明。
+# ⚠️ 上一版缺的就是它：包被 pnpm link 进了 profile，但 cordis.patch.yml 里
+#    没有这一行 ⇒ 插件从来没被加载过（连报错都没有）。
+#
+# 用户真正会改的配置在设置页里（落在 <DSH_HOME>/desktop-memory/config.json），
+# 这里只放默认值。
+# ============================================================================
+- insert:
+    - id: desktop-memory            # id 必须等于设置命名空间名，设置页才认得
+      name: '@local/desktop-memory'
+      config:
+        enabled: true
+        summarizerProvider: buddy
+        summarizerModel: hy3
+        captureIntervalMinutes: 10
+        captureWindowHours: 6
+        sessionsPerTick: 3
+        minChars: 200
+        decaySweepMinutes: 30
+        summaryMaxTokens: 8000
+        fadeThreshold: 0.3
+        forgetThreshold: 0.06
+        protectAfterReviews: 3
+        keepPerDay: 5
+        recallRecentDays: 3
+        recallBudget: 6000
+        injectPersona: true
+        injectMemory: true
+        autoPromote: true
+        registerTools: true
+        # 主动陪你说话：默认关，打开之后她才会每隔一段时间自己判断要不要开口
+        companionEnabled: false
+        companionIntervalMinutes: 30
+        companionMinGapMinutes: 90
+        companionMaxPerDay: 6
+        companionQuietStart: '23:30'
+        companionQuietEnd: '09:00'
+        companionSessionMode: recent
+        companionMaxTokens: 8000
