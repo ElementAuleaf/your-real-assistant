@@ -1,5 +1,5 @@
 /**
- * @local/desktop-memory —— Host 半端
+ * dsh-desktop-memory —— Host 半端
  * ============================================================================
  * 做什么：
  *   1. **跨会话记忆**：定时把最近聊过的会话摘成结构化记忆，按日期文件夹落盘。
@@ -8,15 +8,20 @@
  *   3. **永不删除的两层**：`core/memories.md`（身份、重要的人、承诺、约定）、
  *      `preferences/preferences.md`（习惯、雷区、技术栈、在做的项目）。
  *   4. **人格**：读 `persona.md` 的「核心块」，注入每个会话的系统提示词。
- *   5. **三个工具**：save_memory / recall_memory / review_memory。
+ *   5. **多个工具**：save_memory / recall_memory / review_memory / ask_taste /
+ *      tune_persona / check_taste。
  *
- * 为什么重写而不是修上一版（2026-10-19）：
- *   ① 上一版根本没被挂载 —— profile 的 cordis.patch.yml 里没有它那一行。
- *   ② 自动采集拿 `listEvents()` 的返回值当消息用，而那个接口只返回
- *      `{sessionId, seq, type, time, surface}`，**没有正文** ⇒ 一条都没写出来。
- *   ③ 记忆根目录用 `homedir()/Desktop/memory`，而不是 `$DSH_HOME`。
- *   ④ 「遗忘」是整目录到期即删，没有保持率、没有降级、没有逐条时钟。
- *   ⑤ 摘要其实没调模型，只是把原文摘录下来 —— 用户要的「hy3 总结、提炼关键词」没实现。
+ * 几个必须守住的设计约束（踩过的坑，改代码前先读一遍）：
+ *   ① 插件必须真的被挂载 —— profile 的 `dsh.profile.bundles` 里要有本包名，
+ *      且 `cordis.patch.yml` 里要有 `insert` 那一行。只装依赖不挂载是不会报错的，
+ *      插件只是**安静地不生效**。
+ *   ② 采集不能拿 `listEvents()` 的返回值当正文用 —— 那个接口只返回
+ *      `{sessionId, seq, type, time, surface}`，**没有消息内容**。要正文得走
+ *      `sessionQuery.readSession()`。
+ *   ③ 记忆根目录必须落在 `$DSH_HOME` 下，不能用 `os.homedir()` 自己拼 ——
+ *      拼出来的路径 DSH 根本不知道，写进去等于丢。
+ *   ④ 「遗忘」是逐条按保持率降级，不是整目录到期即删。
+ *   ⑤ 摘要必须真调模型（`ctx.llm.stream()` 旁路调用），不能只摘录原文。
  * ============================================================================
  */
 import { readFileSync } from 'node:fs'
@@ -27,6 +32,11 @@ import { MemoryStore } from './lib/store.mjs'
 import { personaCore, personaParam } from './lib/persona.mjs'
 import { captureOnce, resolveSummarizerRoute } from './lib/workflow.mjs'
 import { makeTools } from './lib/tools.mjs'
+import { makeTasteTools } from './lib/tools-taste.mjs'
+import {
+  normalizeTasteState, emptyChanges, recordChange, canAsk, ASK_TOPICS, readParams, TUNABLE,
+  applyParam, validateChange,
+} from './lib/taste.mjs'
 import { every, Cursor, Serial, makeStats, noteError } from './lib/runtime.mjs'
 import { readText, writeText, readJson, writeJson, dayKey, stamp, nextId } from './lib/home.mjs'
 import { retention, stageLabel, nextReviewAt } from './lib/ebbinghaus.mjs'
@@ -69,8 +79,15 @@ try {
 const DEFAULTS = {
   enabled: true,
   memoryRoot: '',
-  summarizerProvider: 'buddy',
-  summarizerModel: 'hy3',
+  /**
+   * 摘要用的 provider/model。
+   * **留空 = 自动跟随**：用「当前会话最近一次请求用的那条路由」，
+   * 再退到 llm 的默认选择，最后才扫描 provider 目录挑一条能用的。
+   * 这样新装的人不用先知道自己机器上有哪些 provider 名。
+   * 想固定就在设置页里选具体的 provider + 模型。
+   */
+  summarizerProvider: '',
+  summarizerModel: '',
   captureIntervalMinutes: 10,
   captureWindowHours: 6,
   sessionsPerTick: 3,
@@ -79,9 +96,9 @@ const DEFAULTS = {
   chunkChars: 6000,
   /**
    * ⚠️ 这是 **maxTokens**（总输出预算），不是「摘要正文长度」。
-   * 推理模型（hy3 就是）的 reasoning token **也算在里面** ——
-   * 设 1600 时实测会 100% 撞 MAX_TOKENS，一个字都吐不出来（2026-10-19 真撞过）。
-   * 8000 是留足推理空间后还在正常范围的值。
+   * 推理模型的 reasoning token **也算在里面** —— 开得太小会把预算全烧在思考上，
+   * 一个字的 JSON 都吐不出来（错误码 `MAX_TOKENS`）。
+   * 8000 是留足推理空间后仍在正常范围的值。
    */
   summaryMaxTokens: 8000,
   includeCwd: '',
@@ -105,7 +122,7 @@ const DEFAULTS = {
    * 默认是**关**的 —— 这功能会主动往会话里塞消息，必须人自己开。
    */
   companionEnabled: false,
-  /** 多久判断一次（分钟）。用户要的是 30。 */
+  /** 多久判断一次（分钟） */
   companionIntervalMinutes: 30,
   /** 两次说话之间至少隔多久（分钟），防止连续刷屏 */
   companionMinGapMinutes: 90,
@@ -121,17 +138,27 @@ const DEFAULTS = {
   companionModel: '',
   /**
    * ⚠️ 和摘要的 summaryMaxTokens 同理：这是**总输出预算**，推理模型的
-   *    reasoning token 也算在里面。2000 时 hy3 实测会把预算全烧在思考上，
-   *    一个字的 JSON 都出不来（2026-10-20 真撞过）。8000 才够。
+   *    reasoning token 也算在里面。开得太小会把预算全烧在思考上，
+   *    一个字的 JSON 都出不来。8000 才够。
    */
   companionMaxTokens: 8000,
+
+  /* ───────────── 主动问喜好 + 调整人格 ─────────────
+   * 「日常对话里适当地问一些喜好，并据此调整她自己的人格」
+   * 默认**开**，但每天最多 2 次、间隔 6 小时、话题不重复。
+   */
+  tasteAskEnabled: true,
+  tasteAskPerDay: 2,
+  tasteAskMinGapHours: 6,
+  /** 他说「别问了」之后停用多少小时 */
+  tasteMuteHours: 24,
 }
 
 export const Config = !z ? undefined : z.object({
   enabled: z.boolean().default(true).extra('volatile', true).description('总开关'),
   memoryRoot: z.string().default('').extra('volatile', true).description('记忆根目录，留空= <DSH_HOME>/memory'),
-  summarizerProvider: z.string().default('buddy').extra('volatile', true).description('摘要用的 provider'),
-  summarizerModel: z.string().default('hy3').extra('volatile', true).description('摘要用的模型'),
+  summarizerProvider: z.string().default('').extra('volatile', true).description('摘要用的 provider（留空=自动跟随当前会话）'),
+  summarizerModel: z.string().default('').extra('volatile', true).description('摘要用的模型（留空=自动跟随当前会话）'),
   captureIntervalMinutes: z.natural().default(10).extra('volatile', true).description('多久采集一次（分钟）'),
   captureWindowHours: z.natural().default(6).extra('volatile', true).description('只采集最近多少小时内有活动的会话'),
   sessionsPerTick: z.natural().default(3).extra('volatile', true).description('每次最多处理几个会话'),
@@ -163,9 +190,14 @@ export const Config = !z ? undefined : z.object({
   companionProvider: z.string().default('').extra('volatile', true).description('判断用 provider，空=跟随摘要模型'),
   companionModel: z.string().default('').extra('volatile', true).description('判断用模型，空=跟随摘要模型'),
   companionMaxTokens: z.natural().default(8000).extra('volatile', true).description('判断用的输出总预算（推理 token 也算）'),
+
+  tasteAskEnabled: z.boolean().default(true).extra('volatile', true).description('允许她主动问你的喜好'),
+  tasteAskPerDay: z.natural().default(2).extra('volatile', true).description('每天最多问几次（防查户口）'),
+  tasteAskMinGapHours: z.natural().default(6).extra('volatile', true).description('两次之间至少隔几小时'),
+  tasteMuteHours: z.natural().default(24).extra('volatile', true).description('你说「别问了」之后停用几小时'),
 })
 
-/** 逐字段按默认值的类型挑一遍。`config` 里的值**不保证是标量**（踩过）。 */
+/** 逐字段按默认值的类型挑一遍。`config` 里的值**不保证是标量**。 */
 function normalize(src) {
   const out = { ...DEFAULTS }
   for (const k of Object.keys(DEFAULTS)) {
@@ -239,10 +271,10 @@ export function apply(ctx, config) {
    *   ② `config`   —— bundle 补丁（cordis.patch.yml）里的默认值
    *   ③ `config.json` —— **用户在设置页改过的值，最高优先级**
    *
-   * 🔴 2026-10-20 的 bug：原来是 `{ ...config.json, ...补丁 }` —— 补丁后写，把
-   *    用户改的值全盖回去了。表现就是「在页面上开了陪聊，插件一重载又变回关闭」。
-   *    用户当场抓到了这一点（「这回别又变回关闭」）。
-   *    补丁文件是**出厂默认**，用户改过的存档必须赢。
+   * ⚠️ 顺序不能反。补丁文件是**出厂默认**，用户改过的存档必须赢。
+   *    写成 `{ ...config.json, ...补丁 }` 会把用户设置全盖回去，
+   *    表现是「在页面上开了某项，插件一重载又变回默认」。
+   *    `config-merge-smoke.mjs` 就是锁这条的回归测试。
    */
   const savedCfg = readJson(cfgFile, {})
   const patchCfg = (config && typeof config === 'object') ? config : {}
@@ -265,11 +297,26 @@ export function apply(ctx, config) {
   const cursor = new Cursor(join(home, 'cursor.json'))
   /**
    * 摘要证据链：每次实际调模型的记录，落盘。
-   * 用户打开设置页就能看到「上次用的什么模型、什么时候、跑通没有」——
-   * 不用再靠我说「真的实现了」。
+   * 设置页能直接看到「上次用的哪个 provider/model、什么时候、跑通没有」，
+   * 不用只凭日志判断摘要到底有没有真的在跑。
    */
   const proofFile = join(home, 'summary-proof.json')
   let proof = readProof(proofFile)
+
+  /**
+   * 主动问喜好：状态（问过哪些话题、今天问了几次、停用到什么时候）+ 人格变更日志。
+   * 都落盘，重启不丢。路由和工具共用同一份。
+   */
+  const tasteStateFile = join(home, 'taste.json')
+  const changesFile = join(home, 'persona-changes.json')
+  let tasteState = normalizeTasteState(readJson(tasteStateFile, null))
+  let personaChanges = readJson(changesFile, null) || emptyChanges()
+  const saveTasteState = () => {
+    try { writeJson(tasteStateFile, tasteState) } catch { /* ignore */ }
+  }
+  const saveChanges = () => {
+    try { writeJson(changesFile, personaChanges) } catch { /* ignore */ }
+  }
   const log = (msg) => {
     try { store.log(msg) } catch { /* ignore */ }
     try { ctx.logger?.debug?.(`[desktop-memory] ${msg}`) } catch { /* ignore */ }
@@ -280,9 +327,9 @@ export function apply(ctx, config) {
   /**
    * 一轮采集的**硬超时**。
    *
-   * ⚠️ 上一版只对着 Promise 做 `Promise.race` —— 超时之后 `captureOnce` 还在后台跑，
-   *    `stats.running` 永远不回落，之后每一轮都被 `already running` 挡掉
-   *    （2026-10-19 真撞上：状态页一直 running=True，日志却一片安静）。
+   * ⚠️ 只对着 Promise 做 `Promise.race` 是不够的 —— 超时之后 `captureOnce` 还在后台跑，
+   *    `stats.running` 永远不回落，之后每一轮都被 `already running` 挡掉，
+   *    状态页会一直显示 running=True 而日志一片安静。
    * 正确做法：**AbortController**，把 signal 一路传进 llm.stream()，
    * 并且中止之后仍然让 finally 把 running 放回去。
    */
@@ -291,7 +338,7 @@ export function apply(ctx, config) {
 
     /*
      * 自愈：running 标志是进程内状态，任何「没走完 finally」的路径都可能把它卡住
-     * （2026-10-19 就出现过：超时返回了，后台的 captureOnce 还在跑，标志永远不回落）。
+     * （比如超时返回了，后台的 captureOnce 还在跑，标志永远不回落）。
      * 这里加一道保险 —— 超过一轮预算还挂着，就认为它是僵尸，强制清掉。
      */
     if (stats.running) {
@@ -517,7 +564,7 @@ export function apply(ctx, config) {
   }
 
   // 定时循环。`every()` 内部已 try/catch 并且不自我叠加 ——
-  // 裸 setInterval 里未捕获的异常会带走整个宿主进程（dsh-bili-scroll 记过这个教训）。
+  // 裸 setInterval 里未捕获的异常会带走整个宿主进程，所以不要改成 setInterval。
   ctx.effect(() => every(ctx, Math.max(1, cfg.companionIntervalMinutes) * 60_000, async () => {
     if (!cfg.companionEnabled) return
     // 刚说过话就别问了，省一次模型调用
@@ -604,15 +651,44 @@ export function apply(ctx, config) {
           log,
           onSaved: (target, section, content) => log(`工具写入 ${target}/${section}: ${String(content).slice(0, 60)}`),
         })
-        for (const def of tools) {
+
+        // 主动问喜好 + 调人格：状态和变更日志都落盘（提到 apply 作用域，路由也要用）
+        {
+          const tasteTools = makeTasteTools({
+            getCfg: () => cfg,
+            getState: () => tasteState,
+            setState: (s) => {
+              tasteState = normalizeTasteState(s)
+              saveTasteState()
+            },
+            readPersona: () => store.readPersona(),
+            writePersona: (md, change) => {
+              store.writePersona(md)
+              personaChanges = recordChange(personaChanges, {
+                ...change,
+                by: change.by || 'self',
+              })
+              saveChanges()
+            },
+            log,
+          })
+          for (const def of [...tools, ...tasteTools]) {
+            try {
+              ctx.effect(() => {
+                const off = ctx.tools.register(def)
+                return () => { try { off?.() } catch { /* ignore */ } }
+              }, `desktop-memory: tool ${def.name}`)
+            } catch (e) { log(`注册工具 ${def.name} 失败：${e?.message || e}`) }
+          }
+          log(`已注册工具：${[...tools, ...tasteTools].map((t) => t.name).join(' / ')}`)
+          // 逐个确认真的进了注册表 —— 光「没报错」不代表成功
           try {
-            ctx.effect(() => {
-              const off = ctx.tools.register(def)
-              return () => { try { off?.() } catch { /* ignore */ } }
-            }, `desktop-memory: tool ${def.name}`)
-          } catch (e) { log(`注册工具 ${def.name} 失败：${e?.message || e}`) }
+            for (const t of tasteTools) {
+              const got = ctx.tools.get?.(t.name)
+              if (!got) log(`⚠️ 工具 ${t.name} 没进注册表（get 返回空）`)
+            }
+          } catch (e) { log(`工具自检失败：${e?.message || e}`) }
         }
-        log(`已注册工具：${tools.map((t) => t.name).join(' / ')}`)
       } else {
         log('tools 服务不可用 —— save_memory / recall_memory / review_memory 未注册')
       }
@@ -638,12 +714,10 @@ export function apply(ctx, config) {
   /**
    * 摘要路由探测。
    *
-   * 🔴 2026-10-20 的 bug（用户当场抓到：「让你用 hy3 摘要怎么不实现？」）：
-   *    原来这里 `void (async () => ...)()` 在 apply 里**立刻**跑一次，把结果存进
-   *    routeProbeCache 就再也不更新了。而那一刻 LLM 适配器还没注册完 ——
-   *    `listProviders()` 只返回 3 个，`buddy` 不在里面，于是判成「没注册」。
-   *    实际上等适配器加载完成后 buddy/hy3 是完全可用的（实测 46.5 秒跑通）。
-   *    结果就是：**界面一直在撒谎**，用户以为摘要没实现。
+   * ⚠️ 别在 apply 里**立刻**跑一次就把结果缓存住 —— 那一刻 LLM 适配器往往还没注册完，
+   *    `listProviders()` 返回的清单是不全的，于是会误判成「provider 没注册」，
+   *    而实际上适配器加载完成后它是可用的（冷启动可能要几十秒）。
+   *    结果就是：**状态页在撒谎**，用户以为摘要没实现。
    *
    * 修法（三保险）：
    *   ① 延迟 + 退避重试，别抢在适配器前面；
@@ -664,16 +738,25 @@ export function apply(ctx, config) {
         routeProbeCache = { ok: false, error: 'llm 服务不可用' }
         return routeProbeCache
       }
-      const res = await probeRoute(l, { provider: cfg.summarizerProvider, model: cfg.summarizerModel })
-      res.provider = cfg.summarizerProvider
-      res.model = cfg.summarizerModel
+      /**
+       * 配置可能留空（首次安装的默认状态）。这时候先按「自动跟随」解析出一条
+       * 真路由再探 —— 否则 probeRoute 拿空 provider 去查，会理直气壮地报
+       * 「provider "" 没有注册」，界面又变成在撒谎。
+       */
+      const wanted = { provider: cfg.summarizerProvider, model: cfg.summarizerModel }
+      const route = await resolveSummarizerRoute(l, cfg)
+      const res = await probeRoute(l, route.provider || route.model ? route : wanted)
+      res.provider = route.provider || ''
+      res.model = route.model || ''
+      res.via = route.via || 'config'
+      res.requested = `${cfg.summarizerProvider || '(自动)'}/${cfg.summarizerModel || '(自动)'}`
       res.probedAt = Date.now()
       routeProbeCache = res
       if (res.ok) {
         if (res.inCatalog === false) {
-          log(`提示：模型 ${cfg.summarizerModel} 不在 ${cfg.summarizerProvider} 的目录里（适配器可能仍接受）`)
+          log(`提示：模型 ${res.model} 不在 ${res.provider} 的目录里（适配器可能仍接受）`)
         } else {
-          log(`摘要路由可用：${cfg.summarizerProvider}/${cfg.summarizerModel}`)
+          log(`摘要路由可用：${res.provider}/${res.model}${res.via === 'config' ? '' : `（${res.via}）`}`)
         }
         return res
       }
@@ -692,7 +775,7 @@ export function apply(ctx, config) {
 
   /**
    * 适配器注册/卸载时重新探测。
-   * 这是最准的信号：用户切了 provider、或者我们的 free-model 通道上线，都会触发。
+   * 这是最准的信号：切了 provider、或者新 adapter 上线，都会触发。
    */
   try {
     ctx.on('llm/adapters-updated', () => {
@@ -767,7 +850,9 @@ export function apply(ctx, config) {
         pet: personaParam(personaMd, 'pet_name'),
         intimacy: personaParam(personaMd, 'intimacy'),
       },
-      tools: cfg.registerTools ? ['save_memory', 'recall_memory', 'review_memory'] : [],
+      tools: cfg.registerTools
+        ? ['save_memory', 'recall_memory', 'review_memory', 'ask_taste', 'tune_persona', 'check_taste']
+        : [],
       summarizer: `${cfg.summarizerProvider}/${cfg.summarizerModel}`,
       /**
        * 摘要证据：证明「真的用这个模型跑过」。
@@ -865,7 +950,7 @@ export function apply(ctx, config) {
         maxTokens: Number(cfg.summaryMaxTokens) || 8000,
       })
       const ms = Date.now() - t0
-      // 探针结果同样入证据链 —— 这就是「我用 hy3 跑过」的可复现凭据
+      // 探针结果同样入证据链 —— 这是「真的用这条路由跑通过」的可复现凭据
       if (res2.ok) {
         noteSuccess(probeRouteSel)
         try {
@@ -909,6 +994,81 @@ export function apply(ctx, config) {
         probe: routeProbeCache,
         file: proofFile,
       })
+    }
+
+    /* ── 主动问喜好 / 人格调整：状态与操作 ── */
+    if (req.method === 'GET' && path === `${p}/taste`) {
+      const md = store.readPersona()
+      const gate = canAsk({ cfg, state: tasteState, hasMood: true })
+      return sendJson(res, 200, {
+        ok: true,
+        config: {
+          tasteAskEnabled: cfg.tasteAskEnabled,
+          tasteAskPerDay: cfg.tasteAskPerDay,
+          tasteAskMinGapHours: cfg.tasteAskMinGapHours,
+          tasteMuteHours: cfg.tasteMuteHours,
+        },
+        state: tasteState,
+        canAskNow: gate.allow,
+        reason: gate.reason,
+        topics: ASK_TOPICS,
+        remaining: ASK_TOPICS.filter((t) => !tasteState.asked.includes(t.id)).map((t) => t.id),
+        params: readParams(md),
+        tunable: Object.entries(TUNABLE).map(([k, v]) => ({ key: k, label: v.label, kind: v.kind, values: v.values })),
+        changes: (personaChanges.rows || []).slice(0, 20),
+      })
+    }
+
+    if (req.method === 'POST' && path === `${p}/taste`) {
+      const body = await readBody(req)
+      const patch = {}
+      for (const k of ['tasteAskEnabled', 'tasteAskPerDay', 'tasteAskMinGapHours', 'tasteMuteHours']) {
+        if (k in body) patch[k] = body[k]
+      }
+      if ('tasteAskPerDay' in patch) patch.tasteAskPerDay = clamp(Number(patch.tasteAskPerDay), 0, 12, 2)
+      if ('tasteAskMinGapHours' in patch) patch.tasteAskMinGapHours = clamp(Number(patch.tasteAskMinGapHours), 0, 168, 6)
+      if ('tasteMuteHours' in patch) patch.tasteMuteHours = clamp(Number(patch.tasteMuteHours), 1, 720, 24)
+      saveCfg(patch)
+      log(`问喜好设置已更新：${JSON.stringify(patch)}`)
+      return sendJson(res, 200, { ok: true })
+    }
+
+    /** 手动改一个人格参数（设置页用；模型走 tune_persona 工具） */
+    if (req.method === 'POST' && path === `${p}/persona/param`) {
+      const body = await readBody(req)
+      const key = String(body.key || '').trim()
+      const value = String(body.value ?? '').trim()
+      const v = validateChange(key, value)
+      if (!v.ok) return sendJson(res, 200, { ok: false, error: v.error })
+      const md = store.readPersona()
+      const res2 = applyParam(md, key, v.value)
+      if (!res2.ok) return sendJson(res, 200, { ok: false, error: res2.error })
+      if (res2.unchanged) return sendJson(res, 200, { ok: true, unchanged: true })
+      store.writePersona(res2.markdown)
+      personaChanges = recordChange(personaChanges, {
+        kind: 'manual', key, from: res2.old, to: v.value, why: String(body.why || '设置页手动改'), by: 'user',
+      })
+      try { writeJson(changesFile, personaChanges) } catch { /* ignore */ }
+      log(`persona 参数手动改：${key} ${res2.old} → ${v.value}`)
+      return sendJson(res, 200, { ok: true, key, from: res2.old, to: v.value })
+    }
+
+    /** 回滚一次人格改动 */
+    if (req.method === 'POST' && path === `${p}/persona/rollback`) {
+      const body = await readBody(req)
+      const key = String(body.key || '').trim()
+      const to = String(body.to ?? '').trim()
+      const v = validateChange(key, to)
+      if (!v.ok) return sendJson(res, 200, { ok: false, error: v.error })
+      const md = store.readPersona()
+      const res2 = applyParam(md, key, v.value)
+      if (!res2.ok) return sendJson(res, 200, { ok: false, error: res2.error })
+      store.writePersona(res2.markdown)
+      personaChanges = recordChange(personaChanges, {
+        kind: 'rollback', key, from: res2.old, to: v.value, why: '回滚', by: 'user',
+      })
+      try { writeJson(changesFile, personaChanges) } catch { /* ignore */ }
+      return sendJson(res, 200, { ok: true, key, from: res2.old, to: v.value })
     }
 
     if (req.method === 'POST' && path === `${p}/sweep`) {

@@ -1,9 +1,27 @@
 {
-  "name": "@local/desktop-memory",
+  "name": "dsh-desktop-memory",
   "version": "2.0.0",
-  "private": true,
+  "private": false,
   "type": "module",
-  "description": "Cross-session long-term memory with an Ebbinghaus forgetting curve, never-deleted core/preferences layers, LLM summarization, and a persona injected into every session.",
+  "description": "Cross-session long-term memory for DSH: an Ebbinghaus forgetting curve, never-deleted core/preferences layers, LLM summarization, and a persona injected into every session.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "memory",
+    "long-term-memory",
+    "ebbinghaus",
+    "persona"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ElementAuleaf/your-real-assistant.git"
+  },
+  "homepage": "https://github.com/ElementAuleaf/your-real-assistant",
+  "bugs": {
+    "url": "https://github.com/ElementAuleaf/your-real-assistant/issues"
+  },
   "main": "index.js",
   "exports": {
     ".": "./index.js",
@@ -19,7 +37,10 @@
     "prompts",
     "cordis.patch.yml",
     "locale/*.json",
-    "icon.svg"
+    "icon.svg",
+    "test",
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "dsh": ">=0.1.7-rc.1",
@@ -31,9 +52,15 @@
     "@deepseek-ai/schemastery": "*"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-llm": { "optional": true },
-    "@deepseek-ai/dsh-tools": { "optional": true },
-    "@deepseek-ai/schemastery": { "optional": true }
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
   },
   "dsh": {
     "bundle": {
@@ -48,5 +75,12 @@
         "@deepseek-ai/dsh-client-ui-settings-plugins"
       ]
     }
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs && node test/tools-smoke.mjs && node test/companion-smoke.mjs && node test/deliver-smoke.mjs && node test/taste-smoke.mjs && node test/tool-schema-smoke.mjs && node test/summary-route-smoke.mjs && node test/config-merge-smoke.mjs"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

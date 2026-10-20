@@ -1,12 +1,42 @@
-# 桌面记忆（desktop-memory）
-
-安装方式：打开命令提示符，输入dsh plugin --profile desktop add https://github.com/ElementAuleaf/your-real-assistant/archive/refs/tags/v0.0.2.tar.gz
+# desktop-memory · 桌面记忆
 
 跨会话长期记忆 + 艾宾浩斯遗忘曲线 + 永不删除的两层记忆 + 注入式人格。
 
-装上之后，**每一次会话**里的模型都会带着你以前说过的话开始，并通过你的对话记录你的习惯，偏好，性格
+装上之后，**每一次会话**里的模型都会带着你以前说过的话开始，并随着对话慢慢记下你的习惯、偏好和性格。
 
-建议搭配dsh-purge插件使用，能获得更好的效果
+> 建议搭配 `dsh-purge` 使用，效果更好。
+
+---
+
+## 安装
+
+```bash
+# 方式一：直接从 GitHub 装（最简单）
+dsh plugin add https://github.com/ElementAuleaf/your-real-assistant
+
+# 方式二：先 clone 再本地 link（方便改代码，改完即时生效）
+git clone https://github.com/ElementAuleaf/your-real-assistant
+cd your-real-assistant
+dsh plugin add link:<绝对路径>/your-real-assistant
+
+# 方式三：从 release 的 tarball 装
+dsh plugin add ./dsh-desktop-memory-2.0.0.tgz
+```
+
+装完**重启 DSH**，在「设置 → 插件」里应该能看到「桌面记忆」这一页。
+
+> 锁版本安装：在地址后加 `#v2.0.0` 即可，例如
+> `dsh plugin add https://github.com/ElementAuleaf/your-real-assistant#v2.0.0`
+
+### 装完第一件事：选摘要模型
+
+设置页顶部会列出你机器上所有可用的 `provider / 模型`。
+
+- **留空（默认）**：自动跟随你当前会话正在用的模型，开箱即用。
+- **想指定**：选一个具体的 provider + 模型即可。摘要是一次性的旁路调用，不会污染你正在聊的上下文。
+
+> ⚠️ 如果你选的是**推理模型**，`summaryMaxTokens` 要留够（默认 8000）。
+> 推理模型的 reasoning token 也算在 maxTokens 里，设太小会 100% 撞 `MAX_TOKENS`，一个字都吐不出来。
 
 ---
 
@@ -59,31 +89,37 @@
 
 默认人格是**技术搭档**：
 
-- 短句优先、会撒娇、偶尔傲娇
+- 短句优先、有自己的意见
 - 但技术问题不打折：不确定就说不确定，绝不编 API / 命令 / 路径 / 记忆
 - 被问「你是不是真人」如实说是 AI，语气不切换
 
 铁律写死了优先级：**对 > 甜**。正确、诚实、安全永远压过人格。
 
-### 三个工具
+> 人格是**你自己调**的。第一次启动时插件会把 `prompts/persona.md` 复制到
+> `<DSH_HOME>/memory/persona.md`，之后生效的是那一份。改包里的文件不会影响已初始化的用户。
+
+### 六个工具
 
 | 工具 | 什么时候用 |
 |---|---|
 | `save_memory` | 出现长期偏好、雷区、承诺、重要的人、关键决定，或你说「这个记下来」 |
 | `recall_memory` | 要接旧话题、确认细节时按关键词翻更早的记忆（命中会顺便续期） |
 | `review_memory` | 回顾续期，让最近的日常记忆重新变清晰 |
+| `ask_taste` | 让助手在自然时机主动问一个偏好（有每日上限和间隔，防查户口） |
+| `tune_persona` | 按你的反馈微调人格参数（一次只调一个） |
+| `check_taste` | 查现在能不能主动问、还差哪些没问 |
 
 ---
 
 ## 摘要用的是哪个模型
 
-默认 `buddy / hy3 (免费模型)`，**在设置页可以随时换**（会列出宿主上所有 provider 和它们的模型）。
+默认**自动跟随**：用你当前会话最近一次请求的那条路由，再退到默认模型。
+设置页里可以随时改成固定的 provider / 模型（会列出宿主上所有可选项）。
+
 它走的是 `ctx.llm.stream()` —— 一次性的旁路调用，**不进会话历史**，也不占用你正在聊的那个上下文。
 
-如果配置的 provider 没注册，状态页会直接报出来（不会安静地在后台失败一小时）。
-
-> ⚠️ `hy3` 是推理模型，reasoning token 也吃 `maxTokens`。实测摘要要 **8000** 才够；
-> 设成 1600 会 100% 撞 `MAX_TOKENS`，一个字都吐不出来。
+如果配置的 provider 没注册，状态页会直接报出来，并自动尝试「同名模型兜底」和「会话路由兜底」，
+不会安静地在后台失败一小时。
 
 ---
 
@@ -101,7 +137,7 @@
 ```
 
 **沉默是默认答案。** 提示词里反复强调：没有具体由头就别开口，不要问「在吗」，
-不要追问没回的问题，不要卖惨。实测跑了几轮，她都在判断「他在忙开发，没有由头，不打扰」。
+不要追问没回的问题，不要卖惨。
 
 三重刹车，绝不刷屏：
 
@@ -110,8 +146,7 @@
 - **每天上限**（默认 6 次）
 
 技术上用的是 `agent.followup(createUserMessage(...))`，**不是**宿主的 `schedule` 服务 ——
-后者会把正文包成 `[SCHEDULE REMINDER] … "This is a scheduled message from the user"`，
-UI 上还渲染成「自动化任务」卡片，一眼就看得出是机器定时任务。
+后者会把正文包成 `[SCHEDULE REMINDER] …`，UI 上还渲染成「自动化任务」卡片，一眼就看得出是机器定时任务。
 
 > 设置页有「现在试一次（只预览不发）」：只让她判断并给出那句话，**不会真的发出去**。
 > 想真的发，点「立刻说一句」。
@@ -122,40 +157,16 @@ UI 上还渲染成「自动化任务」卡片，一眼就看得出是机器定�
 
 | 内容 | 路径 |
 |---|---|
-| 记忆根目录 | `<DSH_HOME>/memory`（默认 `C:\Users\Velis\.dsh\memory`，设置页可改） |
+| 记忆根目录 | `<DSH_HOME>/memory`（设置页可改） |
 | 插件配置 | `<DSH_HOME>/desktop-memory/config.json` |
 | 会话游标 | `<DSH_HOME>/desktop-memory/cursor.json` |
 | 运行日志 | `<DSH_HOME>/memory/log/memory.log` |
 | **压缩前备份** | `<DSH_HOME>/memory/backup/<日期>/<时间戳>.md`（每个日期留最近 5 份） |
 
+> `DSH_HOME` 默认是 `~/.dsh`（Windows 上是 `%USERPROFILE%\.dsh`）。
+>
 > 压缩是破坏性的：原文一旦被压成一行就回不来了。所以每次重写 `conversations.md` 之前
 > 都会先在 `backup/` 里留一份。真压错了，从那里翻回去。
->
-> 上一版把记忆写到 `~/Desktop/memory` 并且从来没被挂载过 —— 那个目录是空的，已经删了。
-
----
-
-## 开发与自测
-
-node 不在 PATH 上，用宿主自带的那份：
-
-```powershell
-$node = "C:\Users\Velis\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe"
-
-# 端到端：造一次真形状的会话 + 假 llm，验证采集 → 摘要 → 提升 → 回忆 → 遗忘
-& $node ..\research\smoke.mjs
-
-# 工具契约：output.schema / execute 返回原始 JSON / 渲染
-& $node ..\research\tools-smoke.mjs
-
-# 主动陪聊的决策逻辑：安静时段、三重刹车、坏 JSON 兜底
-& $node ..\research\companion-smoke.mjs
-
-# 投递机制：followup / 会话可用性 / 挑会话
-& $node ..\research\deliver-smoke.mjs
-```
-
-四个脚本全绿才算健康：**36 + 22 + 41 + 18** 条断言。
 
 ---
 
@@ -174,10 +185,29 @@ $node = "C:\Users\Velis\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\
 
 ---
 
-## 已知边界
+## 开发与自测
 
-- 摘要只在**定时器**里跑（默认 10 分钟一轮），不会在你聊天时打断你。
-- 会话活动靠 `session/event` 推上来的水位判断（`SessionRecord` 没有 `updatedAt` 字段）。
-- 子代理会话不采集 —— 那不是「他」说的话。
-- 记忆条目里的敏感信息（手机号、住址、密码）会被摘要器主动省略，但**这条规则依赖模型遵守**，
-  真放了敏感内容还是建议手动清掉。
+```bash
+# 跑全部回归（221 条断言）
+npm test
+
+# 或者单独跑某个
+node test/smoke.mjs              # 端到端：采集 → 摘要 → 提升 → 回忆 → 遗忘
+node test/tools-smoke.mjs        # 工具契约：output.schema / execute 返回原始 JSON / 渲染
+node test/companion-smoke.mjs    # 主动陪聊：三重刹车 + 安静时段
+node test/deliver-smoke.mjs      # 投递：目标会话选择 + 创建消息
+node test/taste-smoke.mjs        # 偏好采集：每日上限 + 间隔
+node test/tool-schema-smoke.mjs  # 所有工具的 JSON Schema 合法性
+node test/summary-route-smoke.mjs# 摘要路由：provider 掉了也能按模型名兜底
+node test/config-merge-smoke.mjs # 配置优先级：用户存档 > 补丁默认 > 代码兜底
+```
+
+> 测试会打桩「宿主」（sessionQuery 返回真形状事件、llm 返回真形状 chunk），但**绝不会**跑在真实记忆目录上——脚本开头有安全闸，踩到真目录会直接拒绝运行。
+
+源码仓库：<https://github.com/ElementAuleaf/your-real-assistant>
+
+---
+
+## 许可证
+
+MIT
