@@ -1,6 +1,6 @@
 # 桌面记忆（desktop-memory）
 
-安装方式：下载后复制压缩包文件路径，并在dsh的插件安装里面输入
+安装方式：打开命令提示符，输入dsh plugin --profile desktop add https://github.com/ElementAuleaf/your-real-assistant/archive/refs/tags/v0.0.2.tar.gz
 
 跨会话长期记忆 + 艾宾浩斯遗忘曲线 + 永不删除的两层记忆 + 注入式人格。
 
