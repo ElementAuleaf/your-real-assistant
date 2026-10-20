@@ -25,13 +25,14 @@ import { fileURLToPath } from 'node:url'
 
 import { MemoryStore } from './lib/store.mjs'
 import { personaCore, personaParam } from './lib/persona.mjs'
-import { captureOnce } from './lib/workflow.mjs'
+import { captureOnce, resolveSummarizerRoute } from './lib/workflow.mjs'
 import { makeTools } from './lib/tools.mjs'
 import { every, Cursor, Serial, makeStats, noteError } from './lib/runtime.mjs'
 import { readText, writeText, readJson, writeJson, dayKey, stamp, nextId } from './lib/home.mjs'
 import { retention, stageLabel, nextReviewAt } from './lib/ebbinghaus.mjs'
 import { probeRoute, summarizeChunk } from './lib/llm.mjs'
 import { DEFAULT_INJECTION } from './lib/injection.mjs'
+import { readProof, saveProof, record as recordProof, verdict as proofVerdict } from './lib/proof.mjs'
 import { Presence } from './lib/presence.mjs'
 import {
   runCompanionOnce, normalizeState, freshState, recordOutcome, nextCheckAt,
@@ -262,6 +263,13 @@ export function apply(ctx, config) {
   const stats = makeStats()
   const serial = new Serial()
   const cursor = new Cursor(join(home, 'cursor.json'))
+  /**
+   * 摘要证据链：每次实际调模型的记录，落盘。
+   * 用户打开设置页就能看到「上次用的什么模型、什么时候、跑通没有」——
+   * 不用再靠我说「真的实现了」。
+   */
+  const proofFile = join(home, 'summary-proof.json')
+  let proof = readProof(proofFile)
   const log = (msg) => {
     try { store.log(msg) } catch { /* ignore */ }
     try { ctx.logger?.debug?.(`[desktop-memory] ${msg}`) } catch { /* ignore */ }
@@ -317,6 +325,14 @@ export function apply(ctx, config) {
       const work = captureOnce({
         ctx, store, stats, cursor, serial, config: cfg, log, llm: l, activity,
         signal: controller.signal,
+        onAttempt: (info) => {
+          // 每次摘要尝试都留证据（成功/失败都留），落盘，重启不丢
+          try {
+            proof = recordProof(proof, info)
+            saveProof(proofFile, proof)
+          } catch { /* 证据写不进去不能影响主流程 */ }
+          if (info.ok) noteSuccess(info)
+        },
       })
       const res = await Promise.race([work, abortTimer])
       stats.note = `${stamp()} 采集(${why})：新增 ${res.captured ?? 0}｜跳过 ${res.skipped ?? 0}｜失败 ${res.failed ?? 0}${res.error ? `｜${res.error}` : ''}`
@@ -620,20 +636,85 @@ export function apply(ctx, config) {
 
   /* ── 7. HTTP 路由（设置页用） ── */
   /**
-   * 启动时先探一次摘要路由，把「provider 不存在 / 模型不在目录里」这种事
-   * 记进状态页，而不是让它安静地在定时器里失败一小时。
+   * 摘要路由探测。
+   *
+   * 🔴 2026-10-20 的 bug（用户当场抓到：「让你用 hy3 摘要怎么不实现？」）：
+   *    原来这里 `void (async () => ...)()` 在 apply 里**立刻**跑一次，把结果存进
+   *    routeProbeCache 就再也不更新了。而那一刻 LLM 适配器还没注册完 ——
+   *    `listProviders()` 只返回 3 个，`buddy` 不在里面，于是判成「没注册」。
+   *    实际上等适配器加载完成后 buddy/hy3 是完全可用的（实测 46.5 秒跑通）。
+   *    结果就是：**界面一直在撒谎**，用户以为摘要没实现。
+   *
+   * 修法（三保险）：
+   *   ① 延迟 + 退避重试，别抢在适配器前面；
+   *   ② 监听 `llm/adapters-updated`，适配器一变就重新探；
+   *   ③ 摘要真的跑通时**自愈**（见 noteSuccess）—— 成功记录永远压过探测结果。
    */
   let routeProbeCache = null
-  void (async () => {
+
+  const probeNow = async (attempt = 0) => {
+    const delays = [0, 1500, 4000, 9000, 20000]
     try {
+      if (attempt > 0) {
+        const wait = delays[Math.min(attempt, delays.length - 1)]
+        await new Promise((r) => { try { ctx.timer.timeout(r, wait) } catch { setTimeout(r, wait) } })
+      }
       const l = llm()
-      if (!l) { routeProbeCache = { ok: false, error: 'llm 服务不可用' }; return }
-      routeProbeCache = await probeRoute(l, { provider: cfg.summarizerProvider, model: cfg.summarizerModel })
-      if (!routeProbeCache.ok) log(`摘要路由探测失败：${routeProbeCache.error}`)
-      else if (routeProbeCache.inCatalog === false) log(`提示：模型 ${cfg.summarizerModel} 不在 ${cfg.summarizerProvider} 的目录里（适配器可能仍接受）`)
-      else log(`摘要路由可用：${cfg.summarizerProvider}/${cfg.summarizerModel}`)
-    } catch (e) { routeProbeCache = { ok: false, error: String(e?.message || e) } }
-  })()
+      if (!l) {
+        routeProbeCache = { ok: false, error: 'llm 服务不可用' }
+        return routeProbeCache
+      }
+      const res = await probeRoute(l, { provider: cfg.summarizerProvider, model: cfg.summarizerModel })
+      res.provider = cfg.summarizerProvider
+      res.model = cfg.summarizerModel
+      res.probedAt = Date.now()
+      routeProbeCache = res
+      if (res.ok) {
+        if (res.inCatalog === false) {
+          log(`提示：模型 ${cfg.summarizerModel} 不在 ${cfg.summarizerProvider} 的目录里（适配器可能仍接受）`)
+        } else {
+          log(`摘要路由可用：${cfg.summarizerProvider}/${cfg.summarizerModel}`)
+        }
+        return res
+      }
+      // provider 还没注册 —— 很可能是启动太早，重试几次再下结论
+      if (attempt < delays.length - 1) return probeNow(attempt + 1)
+      log(`摘要路由探测失败（已重试 ${attempt} 次）：${res.error}`)
+      return res
+    } catch (e) {
+      routeProbeCache = { ok: false, error: String(e?.message || e) }
+      if (attempt < delays.length - 1) return probeNow(attempt + 1)
+      return routeProbeCache
+    }
+  }
+
+  void probeNow(0)
+
+  /**
+   * 适配器注册/卸载时重新探测。
+   * 这是最准的信号：用户切了 provider、或者我们的 free-model 通道上线，都会触发。
+   */
+  try {
+    ctx.on('llm/adapters-updated', () => {
+      try { void probeNow(0) } catch { /* ignore */ }
+    })
+  } catch { /* 事件不存在就算了，不影响主流程 */ }
+
+  /**
+   * 摘要真的成功了 —— 用事实覆盖探测。
+   * 探测只是「这一刻注册了没」，成功记录是「真的跑通了」，后者永远更可信。
+   */
+  const noteSuccess = (info) => {
+    routeProbeCache = {
+      ok: true,
+      inCatalog: true,
+      provider: info.provider,
+      model: info.model,
+      probedAt: Date.now(),
+      verifiedByRun: true,
+    }
+  }
+
   const sendJson = (res, code, value) => {
     try {
       res.statusCode = code
@@ -688,6 +769,16 @@ export function apply(ctx, config) {
       },
       tools: cfg.registerTools ? ['save_memory', 'recall_memory', 'review_memory'] : [],
       summarizer: `${cfg.summarizerProvider}/${cfg.summarizerModel}`,
+      /**
+       * 摘要证据：证明「真的用这个模型跑过」。
+       * 界面上优先显示它，而不是那个可能过期的探测结果。
+       */
+      proof: {
+        verdict: proofVerdict(proof, routeProbeCache),
+        lastOk: proof.lastOk,
+        lastFail: proof.lastFail,
+        recent: proof.rows.slice(0, 8),
+      },
     }
   }
 
@@ -763,25 +854,60 @@ export function apply(ctx, config) {
     if (req.method === 'POST' && path === `${p}/live-probe`) {
       const l = llm()
       if (!l) return sendJson(res, 200, { ok: false, error: 'llm 服务不可用' })
+      // 探针也走 resolveRoute 的同样逻辑：provider 名变了就自动找同名模型
+      const probeRouteSel = await resolveSummarizerRoute(l, cfg)
       const t0 = Date.now()
-      const res2 = await summarizeChunk(l, {
-        provider: cfg.summarizerProvider,
-        model: cfg.summarizerModel,
-      }, {
+      const res2 = await summarizeChunk(l, probeRouteSel, {
         date: dayKey(),
         turns: '他：我想让所有会话都记得我说过的话，按日期文件夹存，再按艾宾浩斯曲线忘掉。\n\n她：那得有个独立于会话的落盘层，会话日志只当事实源。',
         chunkNo: 1,
         chunkTotal: 1,
         maxTokens: Number(cfg.summaryMaxTokens) || 8000,
       })
+      const ms = Date.now() - t0
+      // 探针结果同样入证据链 —— 这就是「我用 hy3 跑过」的可复现凭据
+      if (res2.ok) {
+        noteSuccess(probeRouteSel)
+        try {
+          proof = recordProof(proof, {
+            ok: true, provider: probeRouteSel.provider, model: probeRouteSel.model,
+            ms, chunks: 1, sample: String(res2.value?.summary || '').slice(0, 120),
+          })
+          saveProof(proofFile, proof)
+        } catch { /* ignore */ }
+      } else {
+        try {
+          proof = recordProof(proof, {
+            ok: false, provider: probeRouteSel.provider, model: probeRouteSel.model,
+            ms, error: res2.error,
+          })
+          saveProof(proofFile, proof)
+        } catch { /* ignore */ }
+      }
       return sendJson(res, 200, {
         ok: res2.ok === true,
-        ms: Date.now() - t0,
-        route: `${cfg.summarizerProvider}/${cfg.summarizerModel}`,
+        ms,
+        route: `${probeRouteSel.provider}/${probeRouteSel.model}`,
+        requested: `${cfg.summarizerProvider}/${cfg.summarizerModel}`,
+        switched: probeRouteSel.provider !== cfg.summarizerProvider,
         maxTokens: cfg.summaryMaxTokens,
         error: res2.error,
         rawPreview: res2.raw ? String(res2.raw).slice(0, 400) : undefined,
         value: res2.value,
+      })
+    }
+
+    /* ── 摘要证据链：证明「真的用这个模型跑过」 ── */
+    if (req.method === 'GET' && path === `${p}/proof`) {
+      return sendJson(res, 200, {
+        ok: true,
+        verdict: proofVerdict(proof, routeProbeCache),
+        requested: `${cfg.summarizerProvider}/${cfg.summarizerModel}`,
+        lastOk: proof.lastOk,
+        lastFail: proof.lastFail,
+        recent: proof.rows.slice(0, 20),
+        probe: routeProbeCache,
+        file: proofFile,
       })
     }
 

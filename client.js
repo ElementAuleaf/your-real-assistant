@@ -1,42 +1,3 @@
-/**
- * @local/desktop-memory —— 浏览器半端（**「设置」里的一页**）
- * ============================================================================
- * ⭐ client bundle **不是 ESM，是自注册脚本**（2026-10-14 从官方包里挖到的约定）：
- *
- *     window.__ModuleLoader__.load({
- *       id: '<包名>',                       // 必须等于 package.json 的 name
- *       factory: (require) => { ... return { inject: [...], apply(ctx) {...} } },
- *     })
- *
- *   `@local/desktop-memory` 是带 scope 的包名 —— id 要写**整串**（官方模板
- *   `templates/decoration/client.js` 就是 `id: '@local/my-decoration'`）。
- *
- * ⭐ 怎么进「设置」（抄 dsh-bili-scroll / 官方模板）：
- *
- *     const slots = ctx.get('slots') || ctx.slots
- *     slots.inject('settings.section', () => slots.register(
- *       { name: 'settings.section', id: 'desktop-memory', order: 31, label: '桌面记忆' },
- *       () => h(Panel),
- *     ))
- *
- * ⭐ 这一页的**形状是使用者定的**（2026-10-19），从上到下：
- *   状态条 / 摘要模型 / 记忆三层 / 人格 / 核心记忆 / 习惯与喜好 / 日期文件夹 /
- *   手动记一条 / 回忆测试 / 主动陪我说话 / 操作 / 日志
- *   ⇒ 这不是「设置项」，是**让使用者亲眼看见她记住了什么**的页面。所以：
- *     · 能编辑的（人格、核心、偏好）直接给全文，不给"设置项"式的碎开关；
- *     · 日期文件夹要能展开看原文、能点「回顾」续命；
- *     · 回忆测试是**验收**用 —— 输一句话，看她搜不搜得出来。
- *
- * ⚠️ 两个踩过的坑，这里必须记住：
- *   ① **输入框必须绑「本地草稿」**。页面每 5 秒轮询 /status，那个响应里带着 config
- *      和整份文件内容 —— 直接绑服务端那份的话，用户打字打到一半就被冲没了。
- *      所以：草稿只在「保存」「恢复默认」「重新加载」这三个明确的动作后重置，
- *      轮询**永远不碰**草稿。
- *   ② **每个异步动作都要有 busy 标志 + 可见的结果行**（`[data-dm-msg]`）。
- *      失败必须把 error / 异常消息显示出来，不许静悄悄。
- *      「立即采集」要调模型摘要，几十秒很正常 —— 按钮得一直禁用并写「采集中…」。
- * ============================================================================
- */
 window.__ModuleLoader__.load({
   id: '@local/desktop-memory',
   factory: (require) => {
@@ -44,24 +5,14 @@ window.__ModuleLoader__.load({
     const h = React.createElement
 
     const API = '/api/desktop-memory'
-    /** 「立即采集」可能跑几十秒；给个上限，免得按钮永远卡在「采集中…」。 */
     const CAPTURE_TIMEOUT_MS = 180_000
-    /** 「现在试一次 / 立刻说一句」要调一次模型 —— 契约里说最长约 60 秒，给到 120 秒。 */
     const COMPANION_RUN_TIMEOUT_MS = 120_000
-    /**
-     * 「在哪个会话里说」的取值 —— 与 host 的 companionSessionMode 一一对应。
-     * ⚠️ pinned 没在需求里点名，但契约说它是合法值；下拉里必须留一个位置，
-     *    否则服务端存着 pinned 时下拉会落到第一项，一保存就被悄悄改掉。
-     *    所以它只用一个中性标签（「固定会话」），不替 host 编它的含义。
-     */
     const SESSION_MODES = [
       ['recent', '最近在聊的那个会话'],
       ['pinned', '固定会话（pinned）'],
       ['off', '不主动说'],
     ]
     const DECISION_LABEL = { speak: '说', silent: '不说' }
-
-    /* ────────────────────────── HTTP ────────────────────────── */
 
     async function jreq(method, path, body, timeoutMs) {
       const opt = { method, credentials: 'same-origin', cache: 'no-store', headers: {} }
@@ -80,7 +31,6 @@ window.__ModuleLoader__.load({
         const raw = await res.text()
         let data
         try { data = raw ? JSON.parse(raw) : {} } catch {
-          // 路由没挂上时，服务器返回的是 HTML 404 页 —— 直接把开头几行摊给使用者看
           throw new Error(`服务器返回的不是 JSON（HTTP ${res.status}）：${String(raw).slice(0, 160)}`)
         }
         if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`)
@@ -98,15 +48,11 @@ window.__ModuleLoader__.load({
       return s || '未知错误'
     }
 
-    /* ────────────────────────── 小工具 ────────────────────────── */
-
-    /** 保持率 → 百分比文本。 */
     function pct(v) {
       const n = Number(v)
       return `${Math.round((Number.isFinite(n) ? n : 0) * 100)}%`
     }
 
-    /** 保持率 → 颜色档：>0.7 绿 / 0.3–0.7 黄 / <0.3 红。 */
     function toneOf(v) {
       const n = Number(v) || 0
       if (n > 0.7) return 'good'
@@ -114,7 +60,6 @@ window.__ModuleLoader__.load({
       return 'bad'
     }
 
-    /** 时间戳 → 中文相对描述（「3 小时前」「2 天后」）。 */
     function relTime(ms) {
       const t = Number(ms)
       if (!t || !Number.isFinite(t)) return '—'
@@ -134,7 +79,6 @@ window.__ModuleLoader__.load({
     const since = (ms) => (Number(ms) ? relTime(ms) : '还没')
     const absTime = (ms) => (Number(ms) ? new Date(Number(ms)).toLocaleString('zh-CN') : '')
 
-    /** 时刻 → 「14:07」。判断日志那种密集列表里，相对时间反而不好读。 */
     function clockTime(ms) {
       const t = Number(ms)
       if (!t || !Number.isFinite(t)) return '—'
