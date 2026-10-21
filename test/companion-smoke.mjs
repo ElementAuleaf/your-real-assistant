@@ -1,11 +1,11 @@
 /**
- * test/companion-smoke.mjs —— 主动陪聊的决策逻辑测试
- * 跑法：node test/companion-smoke.mjs
+ * research/companion-smoke.mjs —— 主动陪聊的决策逻辑测试
+ * 跑法：& "<node>" research/companion-smoke.mjs
  *
  * 这套测试一件重要的事：**确认「不说」是大多数时候的正确结果**。
  */
 import { runCompanionOnce, precheck, inQuietHours, parseDecision, normalizeState, freshState, todayKey } from '../lib/companion.mjs'
-import { normalizeDecision, buildCompanionPrompt, humanMinutes } from '../lib/companion-prompt.mjs'
+import { buildCompanionPrompt, humanMinutes } from '../lib/companion-prompt.mjs'
 
 let pass = 0
 let fail = 0
@@ -44,7 +44,7 @@ check('正常条件下通过前置检查', precheck({ cfg: CFG, state: fresh, no
 check('达到每日上限 → 不说',
   precheck({ cfg: CFG, state: { ...fresh, todayCount: 6 }, now: at(14) }).speak === false)
 check('不同日期重置计数',
-  precheck({ cfg: CFG, state: { ...fresh, day: '2024-01-01', todayCount: 99 }, now: at(14) }).speak === true)
+  precheck({ cfg: CFG, state: { ...fresh, day: '2026-10-19', todayCount: 99 }, now: at(14) }).speak === true)
 check('最小间隔没到 → 不说',
   precheck({ cfg: CFG, state: { ...fresh, lastSpokeAt: at(13, 30).getTime() }, now: at(14) }).speak === false,
   precheck({ cfg: CFG, state: { ...fresh, lastSpokeAt: at(13, 30).getTime() }, now: at(14) }).reason)

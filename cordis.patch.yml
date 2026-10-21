@@ -1,30 +1,19 @@
+# 桌面记忆（desktop-memory）—— bundle 补丁
 # ============================================================================
-# dsh-desktop-memory —— DSH bundle 补丁（插件**自带**的挂载声明）
-# ============================================================================
-# 这一块就是「把插件挂到配置树上」的声明。装好之后，profile 只要在
-# `dsh.profile.bundles` 里列出本包名就生效，不用再手改 profile 自己的
-# cordis.patch.yml：
-#
-#   dsh plugin --profile web add dsh-desktop-memory
-#   （本地开发时用：dsh plugin --profile web add link:<插件目录>）
-#
-# ⚠️ 两条硬约束：
-#   ① 这里 `name` 必须等于 package.json 的 `name`；
-#   ② 这里 `id` 必须等于设置命名空间名（index.js 的 `export const name`），
-#      设置页才认得出这是谁的配置。
+# 这一行就是「把插件挂到配置树上」的挂载声明。
+# ⚠️ 上一版缺的就是它：包被 pnpm link 进了 profile，但 cordis.patch.yml 里
+#    没有这一行 ⇒ 插件从来没被加载过（连报错都没有）。
 #
 # 用户真正会改的配置在设置页里（落在 <DSH_HOME>/desktop-memory/config.json），
-# 这里只放出厂默认值。补丁是**最低优先级**：用户存档永远覆盖它。
+# 这里只放默认值。
 # ============================================================================
 - insert:
-    - id: desktop-memory
-      name: dsh-desktop-memory
+    - id: desktop-memory            # id 必须等于设置命名空间名，设置页才认得
+      name: '@local/desktop-memory'
       config:
         enabled: true
-        # 摘要模型：留空 = 自动跟随你当前会话正在用的 provider/model。
-        # 想固定就填成你机器上真实存在的 provider 和模型（设置页会列出可选项）。
-        summarizerProvider: ''
-        summarizerModel: ''
+        summarizerProvider: buddy
+        summarizerModel: hy3
         captureIntervalMinutes: 10
         captureWindowHours: 6
         sessionsPerTick: 3
@@ -50,8 +39,3 @@
         companionQuietEnd: '09:00'
         companionSessionMode: recent
         companionMaxTokens: 8000
-        # 主动问喜好：默认开，但有每日上限 + 最小间隔，防止变成查户口
-        tasteAskEnabled: true
-        tasteAskPerDay: 2
-        tasteAskMinGapHours: 6
-        tasteMuteHours: 24

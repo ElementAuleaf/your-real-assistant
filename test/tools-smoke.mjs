@@ -1,6 +1,6 @@
 /**
- * test/tools-smoke.mjs —— 验证工具契约（output / execute 返回原始 JSON）
- * 跑法：node test/tools-smoke.mjs
+ * research/tools-smoke.mjs —— 验证工具契约（output / execute 返回原始 JSON）
+ * 跑法：& "<node>" research/tools-smoke.mjs
  */
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'

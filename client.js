@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: 'dsh-desktop-memory',
+  id: '@local/desktop-memory',
   factory: (require) => {
     const React = require('react')
     const h = React.createElement
@@ -438,7 +438,7 @@ window.__ModuleLoader__.load({
      * 表单草稿由本组件自己攥着 —— 轮询 /status 永远不碰它们（和整页同一个规矩）。
      * 保存时把 provider + model 一起 POST /config，再由 Panel 刷一次 /status。
      *
-     * 「模型不在目录里」是**正常情况**：有些适配器接受未列在目录里的 id。
+     * 「模型不在目录里」是**正常情况**：buddy 适配器接受未列在目录里的 id。
      * 所以永远留着自由输入框，不做「只能从下拉里选」这种限制。
      */
     function ModelSection({ st, msg, say, busy, setBusy, onSaved }) {
@@ -576,7 +576,7 @@ window.__ModuleLoader__.load({
                 }, String((m && m.name) || id))
               })))),
 
-        // 自由输入：目录里没有的 id 也得能用（有些适配器接受未上架的名字）
+        // 自由输入：目录里没有的 id 也得能用（buddy 就接受未上架的名字）
         h('div', { 'data-dm-row': '' },
           h('input', {
             'data-dm-input': '', 'data-dm-grow': '', type: 'text',

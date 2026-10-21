@@ -1,16 +1,16 @@
 /**
- * test/smoke.mjs —— 用假 ctx 跑一遍真链路
+ * research/smoke.mjs —— 用假 ctx 跑一遍真链路
  * ============================================================================
  * 不打桩实现，只打桩「宿主」：sessionQuery 返回真形状的事件、llm 返回真形状的 chunk。
  * 跑法（node 不在 PATH 上）：
- *   node test/smoke.mjs
+ *   & "C:\Users\Velis\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe" research/smoke.mjs
  * ============================================================================
  */
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const PLUGIN = new URL('../', import.meta.url).pathname.replace(/^\//, '')
+const PLUGIN = new URL('../desktop-memory/', import.meta.url).pathname.replace(/^\//, '')
 
 const { MemoryStore } = await import(new URL('../lib/store.mjs', import.meta.url))
 const { captureOnce } = await import(new URL('../lib/workflow.mjs', import.meta.url))
@@ -19,7 +19,7 @@ const { readText } = await import(new URL('../lib/home.mjs', import.meta.url))
 
 const root = mkdtempSync(join(tmpdir(), 'dm-smoke-'))
 // 🔴 安全闸：这套测试会压缩/重写文件。**绝不允许**它跑在真实记忆目录上。
-//    万一路径算错踩到真目录，直接拒绝运行，避免把真实记忆压没。
+//    2026-10-19 我就是手动对着真目录跑了一次 sweep，把当天 8 条记忆压没了。
 const REAL_ROOT = join(process.env.DSH_HOME || join(process.env.USERPROFILE || '', '.dsh'), 'memory')
 if (root.toLowerCase().startsWith(REAL_ROOT.toLowerCase())) {
   console.error('拒绝在真实记忆目录上运行测试：', root)

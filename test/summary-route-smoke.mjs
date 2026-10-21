@@ -1,10 +1,11 @@
 /**
- * test/summary-route-smoke.mjs —— 摘要路由解析 + 证据链
- * 跑法：node test/summary-route-smoke.mjs
+ * research/summary-route-smoke.mjs —— 摘要路由解析 + 证据链
+ * 跑法：& "<node>" research/summary-route-smoke.mjs
  *
- * 🔴 这套测试锁死摘要路由的一个陷阱：
- *    provider 在某些时刻没注册，而代码只会死用配置里的 provider 名，
- *    于是每次摘要都撞 NO_ADAPTER。用户要的是**某个具体模型**，不是 provider 这个壳。
+ * 🔴 这套测试锁死 2026-10-20 那次投诉：
+ *    「让你用 hy3 摘要怎么不实现？」
+ *    真相是 provider `buddy` 在某些时刻没注册，而代码只会死用配置里的 provider 名，
+ *    于是每次摘要都撞 NO_ADAPTER。用户要的是**hy3 这个模型**，不是 buddy 这个壳。
  */
 import { resolveSummarizerRoute, findProviderForModel } from '../lib/workflow.mjs'
 import { record, normalizeProof, verdict, emptyProof } from '../lib/proof.mjs'

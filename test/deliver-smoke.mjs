@@ -1,6 +1,6 @@
 /**
- * test/deliver-smoke.mjs —— 单独验证「话能不能递进会话」
- * 跑法：node test/deliver-smoke.mjs
+ * research/deliver-smoke.mjs —— 单独验证「话能不能递进会话」
+ * 跑法：& "<node>" research/deliver-smoke.mjs
  *
  * 用假 ctx 复现宿主的形状：agents.get(id) → agent.followup(msg)。
  * 真实模型那条路另外测（会真的往会话里发东西），这里只测投递机制。

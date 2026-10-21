@@ -1,8 +1,8 @@
 /**
- * test/config-merge-smoke.mjs —— 配置优先级回归测试
- * 跑法：node test/config-merge-smoke.mjs
+ * research/config-merge-smoke.mjs —— 配置优先级回归测试
+ * 跑法：& "<node>" research/config-merge-smoke.mjs
  *
- * 🔴 这个测试锁死一个配置优先级 bug：
+ * 🔴 这个测试是为了锁死 2026-10-20 那个 bug：
  *    用户已经在设置页把「主动陪聊」打开了，插件一重载又变回关闭。
  *    根因是 `{ ...用户存档, ...补丁默认值 }` —— 补丁后写，把用户的设置盖回去了。
  *
@@ -17,9 +17,25 @@ const check = (n, c, x = '') => {
   else { fail++; console.log(`  ❌ ${n}${x ? ' — ' + x : ''}`) }
 }
 
-const SRC = readFileSync(new URL('../index.js', import.meta.url), 'utf8')
+/**
+ * 找到要检查的 index.js。
+ * 这个测试既要能在开发目录跑（../index.js），
+ * 也要能在发布包内跑（../index.js）。按顺序试，找到哪个用哪个。
+ */
+function findIndexFile() {
+  const candidates = ['../index.js', '../index.js']
+  for (const rel of candidates) {
+    try {
+      return { text: readFileSync(new URL(rel, import.meta.url), 'utf8'), rel }
+    } catch { /* 试下一个 */ }
+  }
+  throw new Error('找不到 index.js（试过 ' + candidates.join(' 和 ') + '）')
+}
+
+const { text: SRC, rel: SRC_PATH } = findIndexFile()
 
 console.log('[1] 源码里的合并顺序')
+console.log(`  （检查的是 ${SRC_PATH}）`)
 check('用户存档展开在补丁之后',
   /\.\.\.patchCfg,\s*\.\.\.savedCfg/.test(SRC),
   '必须是 { ...补丁, ...用户存档 }')

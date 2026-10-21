@@ -1,8 +1,8 @@
 /**
- * test/tool-schema-smoke.mjs —— 所有工具的 schema 合法性
- * 跑法：node test/tool-schema-smoke.mjs
+ * research/tool-schema-smoke.mjs —— 所有工具的 schema 合法性
+ * 跑法：& "<node>" research/tool-schema-smoke.mjs
  *
- * 🔴 这测试锁死一个工具 schema 事故：
+ * 🔴 这测试是为了锁死 2026-10-20 那次事故：
  *    check_taste 的 parameters 写成了 `{}`，宿主直接拒掉整轮请求：
  *      "Invalid schema for function 'check_taste':
  *       schema must be a JSON Schema of 'type: "object"', got 'type: null'"

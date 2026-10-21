@@ -1,9 +1,9 @@
 {
   "name": "dsh-desktop-memory",
-  "version": "2.0.0",
+  "version": "2.6.2",
   "private": false,
   "type": "module",
-  "description": "Cross-session long-term memory for DSH: an Ebbinghaus forgetting curve, never-deleted core/preferences layers, LLM summarization, and a persona injected into every session.",
+  "description": "Cross-session long-term memory for DSH: Ebbinghaus forgetting curve, never-deleted core/preferences layers with item-level editing, LLM summarization, two-layer persona (core + mood), proactive companionship, and per-day search indexes.",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -77,7 +77,7 @@
     }
   },
   "scripts": {
-    "test": "node test/smoke.mjs && node test/tools-smoke.mjs && node test/companion-smoke.mjs && node test/deliver-smoke.mjs && node test/taste-smoke.mjs && node test/tool-schema-smoke.mjs && node test/summary-route-smoke.mjs && node test/config-merge-smoke.mjs"
+    "test": "node test/smoke.mjs && node test/tools-smoke.mjs && node test/tool-schema-smoke.mjs && node test/companion-smoke.mjs && node test/deliver-smoke.mjs && node test/taste-smoke.mjs && node test/persona-layers-smoke.mjs && node test/persona-write-smoke.mjs && node test/mood-smoke.mjs && node test/index-smoke.mjs && node test/recall-turn-smoke.mjs && node test/rules-smoke.mjs && node test/reflect-smoke.mjs && node test/habits-smoke.mjs && node test/habits-drift-scenario.mjs && node test/evergreen-edit-smoke.mjs && node test/summary-route-smoke.mjs && node test/config-merge-smoke.mjs && node test/integration-smoke.mjs"
   },
   "publishConfig": {
     "access": "public",

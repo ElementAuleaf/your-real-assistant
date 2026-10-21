@@ -1,12 +1,12 @@
 /**
- * test/taste-smoke.mjs —— 主动问喜好 + 调人格
- * 跑法：node test/taste-smoke.mjs
+ * research/taste-smoke.mjs —— 主动问喜好 + 调人格
+ * 跑法：& "<node>" research/taste-smoke.mjs
  *
  * 这套测试的重点不是「功能能用」，而是**「不会变成查户口」**：
  * 每天上限、最小间隔、话题不重复、他说别问就停、人格只能改白名单。
  */
 import { canAsk, recordAsk, mute, normalizeTasteState, ASK_TOPICS } from '../lib/taste.mjs'
-import { readParams, validateChange, applyParam, TUNABLE, recordChange, emptyChanges } from '../lib/taste.mjs'
+import { readParams, validateChange, applyParam, recordChange, emptyChanges } from '../lib/taste.mjs'
 
 let pass = 0
 let fail = 0
