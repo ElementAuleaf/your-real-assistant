@@ -308,6 +308,57 @@ window.__ModuleLoader__.load({
           h('span', { 'data-dm-note': '' }, value === null ? '' : `${String(value).length} 字`)))
     }
 
+    /**
+     * ── 日期文件夹（折叠版） ────────────────────────────────────────────────
+     * 需求（2026-10-22）：「设置里面的回顾日期做一个展开栏，不然太多了」。
+     *
+     * 标题行常显：标题 + 天数摘要 + 展开箭头；点整行切换展开。
+     * 展开后才是原来的「全部回顾」按钮 + 日期列表。
+     * 状态（开/关）放组件内部 state —— 别处不需要知道它开没开。
+     */
+    function DaysSection({ days, msg, busy, openDay, dayText, onViewDay, onReviewDay, onPinDay, onReviewAll }) {
+      const [open, setOpen] = React.useState(false)
+      const n = days.length
+      const title = `日期文件夹（内容会淡，文件夹永远在）${n ? ` · ${n} 天` : ''}`
+      return h('div', { 'data-dm-sec': '', 'data-dm-days': '' },
+        h('div', {
+          'data-dm-hrow': '', 'data-dm-collapsible': '',
+          role: 'button', tabIndex: 0,
+          'aria-expanded': open ? 'true' : 'false',
+          onClick: () => setOpen((v) => !v),
+          onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen((v) => !v) } },
+        },
+          h('div', { 'data-dm-h': '' },
+            h('span', { 'data-dm-caret': '', 'data-open': open ? '' : undefined, 'aria-hidden': 'true' }, '▸'),
+            title),
+          h('div', { 'data-dm-grow': '' }),
+          h('span', { 'data-dm-note': '' }, open ? '' : (n ? '点开查看与回顾' : ''))),
+        msg && msg.text ? h(Msg, { m: msg }) : null,
+        open
+          ? h('div', { 'data-dm-daysbody': '' },
+            n > 0
+              ? h('div', { 'data-dm-row': '' },
+                h('button', {
+                  'data-dm-btn': '', type: 'button', disabled: Boolean(busy),
+                  onClick: onReviewAll,
+                }, busy === 'review:all' ? '回顾中…' : '全部回顾'))
+              : null,
+            n === 0
+              ? h('div', { 'data-dm-note': '' }, '还没有任何日期文件夹 —— 采集到第一批对话之后这里就会出现。')
+              : null,
+            ...days.map((d) => h(DayRow, {
+              key: String(d && d.day),
+              d,
+              open: openDay === String(d && d.day),
+              text: dayText,
+              busy: Boolean(busy),
+              onView: onViewDay,
+              onReview: onReviewDay,
+              onPin: onPinDay,
+            })))
+          : null)
+    }
+
     /** 一个日期文件夹：日期 / 条数 / 保持率 / 状态 / 下次复习 + 查看、回顾、存档。 */
     function DayRow({ d, open, text, busy, onView, onReview, onPin }) {
       const day = d && d.day ? d.day : ''
@@ -785,7 +836,7 @@ window.__ModuleLoader__.load({
           + '不想说就不说，不会刷屏。'),
 
         h(ToggleRow, {
-          label: ready ? (d.enabled ? '主动说话已打开' : '主动说话已关着') : '读取中…',
+          label: ready ? (d.enabled ? '主动说话已打开' : '主动说话已关闭') : '读取中…',
           note: '总开关。关着的时候到点也不会判断。',
           on: Boolean(d.enabled),
           disabled: Boolean(busy) || !ready,
@@ -1376,30 +1427,13 @@ window.__ModuleLoader__.load({
           onReload: () => onReloadEvergreen('preferences'),
         }),
 
-        /* ── 7. 日期文件夹 ── */
-        h(Section, {
-          title: '日期文件夹（内容会淡，文件夹永远在）',
-          msg: M('days'),
-          right: days.length
-            ? h('button', {
-              'data-dm-btn': '', type: 'button', disabled: Boolean(busy),
-              onClick: onReviewAll,
-            }, busy === 'review:all' ? '回顾中…' : '全部回顾')
-            : null,
-        },
-          days.length === 0
-            ? h('div', { 'data-dm-note': '' }, '还没有任何日期文件夹 —— 采集到第一批对话之后这里就会出现。')
-            : null,
-          ...days.map((d) => h(DayRow, {
-            key: String(d && d.day),
-            d,
-            open: openDay === String(d && d.day),
-            text: dayText,
-            busy: Boolean(busy),
-            onView: onViewDay,
-            onReview: onReviewDay,
-            onPin: onPinDay,
-          }))),
+        /* ── 7. 日期文件夹（默认收起，点标题展开 —— 日期太多时别把页面撑爆） ── */
+        h(DaysSection, {
+          days, msg: M('days'), busy,
+          openDay, dayText,
+          onViewDay, onReviewDay, onPinDay,
+          onReviewAll,
+        }),
 
         /* ── 8. 手动记一条 ── */
         h(Section, { title: '手动记一条', msg: M('remember') },

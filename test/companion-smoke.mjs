@@ -160,6 +160,25 @@ console.log('\n[8] 提示词与工具函数')
   check('humanMinutes 正常', humanMinutes(90) === '1 小时 30 分钟', humanMinutes(90))
 }
 
+console.log('\n[8b] 今日资讯进上下文（2026-10-22 需求）')
+{
+  const withNews = buildCompanionPrompt({
+    cfg: CFG, state: fresh, now: at(14),
+    context: { recent: '', news: '- 某某发布了新产品\n- 某某团队拿了融资' },
+  })
+  check('有资讯 → 提示词带上资讯段', /今日资讯/.test(withNews.user) && /新产品/.test(withNews.user), withNews.user.slice(-400))
+  check('带「不许编新闻」的硬规矩', /禁止编造/.test(withNews.user))
+
+  const noNews = buildCompanionPrompt({ cfg: CFG, state: fresh, now: at(14), context: { recent: '他：你好' } })
+  check('没资讯 → 不出现资讯段（也就不会诱导模型编）', !/今日资讯/.test(noNews.user))
+
+  const long = buildCompanionPrompt({
+    cfg: CFG, state: fresh, now: at(14),
+    context: { news: 'x'.repeat(3000) },
+  })
+  check('超长资讯被截断（1800 内）', /今日资讯/.test(long.user) && long.user.split('今日资讯')[1].length < 2100)
+}
+
 console.log('\n[9] 状态归一化（升级不崩）')
 check('全空也能归一化', normalizeState(null).todayCount === 0)
 check('缺字段补齐', normalizeState({ lastSpokeAt: 123 }).todayCount === 0 && normalizeState({ lastSpokeAt: 123 }).lastSpokeAt === 123)

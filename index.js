@@ -51,6 +51,7 @@ import {
   runCompanionOnce, normalizeState, recordOutcome, nextCheckAt,
 } from './lib/companion.mjs'
 import { loadCreateUserMessage, pickTargetSession, deliverToSession, isUsable } from './lib/deliver.mjs'
+import { fetchTodayNews } from './lib/news.mjs'
 import { listRoutes } from './lib/models.mjs'
 import { textOfMessage as textOf } from './lib/transcript.mjs'
 
@@ -138,6 +139,17 @@ const DEFAULTS = {
    *    一个字的 JSON 都出不来（2026-10-20 真撞过）。8000 才够。
    */
   companionMaxTokens: 8000,
+  /**
+   * 「去网上搜索今日相关资讯后询问我」（2026-10-22 用户原话）。
+   * 开着的时候，每一轮判断前先抓一份今日资讯摘要塞进上下文，
+   * 让她的开口有真东西可聊，而不是干巴巴的「在吗」。
+   * 搜失败不挡判断 —— 顶多这一轮没有资讯可提。
+   */
+  companionNewsEnabled: true,
+  /** 资讯请求超时（毫秒）。慢源宁可放弃，别拖住整轮判断。 */
+  companionNewsTimeoutMs: 12_000,
+  /** 最多塞给模型多少字的资讯摘要 */
+  companionNewsMaxChars: 1600,
 
   /* ───────────── 主动问喜好 + 调整人格 ─────────────
    * 「日常对话里适当地问一些喜好，并据此调整她自己的人格」
@@ -240,6 +252,9 @@ export const Config = !z ? undefined : z.object({
   companionProvider: z.string().default('').extra('volatile', true).description('判断用 provider，空=跟随摘要模型'),
   companionModel: z.string().default('').extra('volatile', true).description('判断用模型，空=跟随摘要模型'),
   companionMaxTokens: z.natural().default(8000).extra('volatile', true).description('判断用的输出总预算（推理 token 也算）'),
+  companionNewsEnabled: z.boolean().default(true).extra('volatile', true).description('开口前先搜今日资讯（没搜到也能说）'),
+  companionNewsTimeoutMs: z.natural().default(12000).extra('volatile', true).description('单个资讯源的超时（毫秒）'),
+  companionNewsMaxChars: z.natural().default(1600).extra('volatile', true).description('资讯摘要最多带多少字进判断'),
 
   tasteAskEnabled: z.boolean().default(true).extra('volatile', true).description('允许她主动问你的喜好'),
   tasteAskPerDay: z.natural().default(2).extra('volatile', true).description('每天最多问几次（防查户口）'),
@@ -300,11 +315,17 @@ const COMPANION_KEYS = [
   'companionEnabled', 'companionIntervalMinutes', 'companionMinGapMinutes', 'companionMaxPerDay',
   'companionQuietStart', 'companionQuietEnd', 'companionSessionMode',
   'companionProvider', 'companionModel', 'companionMaxTokens',
+  'companionNewsEnabled', 'companionNewsTimeoutMs', 'companionNewsMaxChars',
 ]
 
 function extractCompanion(cfg) {
   const out = {}
   for (const k of COMPANION_KEYS) out[k] = cfg[k]
+  /**
+   * 给界面的别名：CompanionSection 读 `enabled`，别让它读到 undefined ——
+   * 否则开关永远显示「关」，而实际配置是开的（同一个 bug 的另一半）。
+   */
+  out.enabled = Boolean(cfg.companionEnabled)
   return out
 }
 
@@ -635,6 +656,9 @@ export function apply(ctx, config) {
   let companionState = normalizeState(readJson(companionFile, null))
   let companionRunning = false
   let makeMessage = null   // 延迟到第一次真正要用时再解析 createUserMessage
+  /** 今日资讯的进程内缓存（10 分钟内不重复真抓）。 */
+  const companionNewsCache = { at: 0, text: '', items: 0, sources: [] }
+  const companionNewsAbort = (typeof AbortController === 'function') ? new AbortController() : null
 
   const saveCompanion = () => {
     try { writeJson(companionFile, companionState) } catch { /* 存不下就下次再存 */ }
@@ -686,6 +710,24 @@ export function apply(ctx, config) {
       const r = store.recallText({ recentDays: 1, budget: 2600 })
       if (r) out.memory = r
     } catch { /* ignore */ }
+
+    /**
+     * 今日资讯（2026-10-22 用户原话：「主动说话的内容改为去网上搜索今日相关资讯后询问我」）。
+     * 开着就先抓一份塞进上下文，让她开口有真东西可聊。
+     * 失败不挡判断 —— 顶多这一轮没新闻可提。
+     */
+    if (c.companionNewsEnabled !== false) {
+      try {
+        const news = await fetchTodayNews({
+          timeoutMs: Number(c.companionNewsTimeoutMs) || 12_000,
+          maxChars: Number(c.companionNewsMaxChars) || 1600,
+          cache: companionNewsCache,
+          signal: companionNewsAbort?.signal,
+          log,
+        })
+        if (news.text) out.news = news.text
+      } catch (e) { log(`companion 抓资讯失败：${e?.message || e}`) }
+    }
 
     return out
   }
@@ -967,6 +1009,8 @@ export function apply(ctx, config) {
   // ③ 卸载时把没反思的刷一遍（不丢最后一段）
   ctx.effect(() => () => {
     try {
+      // 顺手中止可能在跑的资讯抓取
+      try { companionNewsAbort?.abort() } catch { /* ignore */ }
       saveReflect()
       // 卸载阶段不能再等模型，只能把缓冲状态留下来 —— 日志里说清楚
       for (const [sid, buf] of reflectBuffers) {
@@ -2256,10 +2300,25 @@ export function apply(ctx, config) {
       const body = await readBody(req)
       const patch = {}
       for (const k of COMPANION_KEYS) if (k in body) patch[k] = body[k]
+      /**
+       * 🔴 2026-10-22 用户报的 bug：「主动说话关着她也会找我」。
+       *
+       * 根因：设置页的开关 POST 的是 `enabled`（界面上那节的字段名），
+       * 而这里只认 `companionEnabled` —— 于是开关**从来没存进去过**。
+       * 用户看到「已关掉」的成功提示，实际 config.json 里 companionEnabled 还是 true，
+       * 她就一直在找他说话。
+       *
+       * 兼容两种字段名：`enabled`（界面）映射到 `companionEnabled`（服务端）。
+       * 显式传 `companionEnabled` 时仍然优先（API 直调的旧语义不变）。
+       */
+      if ('companionEnabled' in body) delete patch.enabled
+      else if ('enabled' in body) patch.companionEnabled = Boolean(body.enabled)
       // 钳一下，别让界面传进来离谱的值
       if ('companionIntervalMinutes' in patch) patch.companionIntervalMinutes = clamp(Number(patch.companionIntervalMinutes), 1, 24 * 60, 30)
       if ('companionMinGapMinutes' in patch) patch.companionMinGapMinutes = clamp(Number(patch.companionMinGapMinutes), 0, 24 * 60, 90)
       if ('companionMaxPerDay' in patch) patch.companionMaxPerDay = clamp(Number(patch.companionMaxPerDay), 0, 96, 6)
+      if ('companionNewsTimeoutMs' in patch) patch.companionNewsTimeoutMs = clamp(Number(patch.companionNewsTimeoutMs), 2000, 60_000, 12_000)
+      if ('companionNewsMaxChars' in patch) patch.companionNewsMaxChars = clamp(Number(patch.companionNewsMaxChars), 200, 8000, 1600)
       saveCfg(patch)
       log(`陪聊设置已更新：${JSON.stringify(patch)}`)
       return sendJson(res, 200, { ok: true, config: extractCompanion(cfg) })
