@@ -20,7 +20,7 @@ cd your-real-assistant
 dsh plugin add link:<绝对路径>/your-real-assistant
 
 # 方式三：从 release 的 tarball 装
-dsh plugin add ./dsh-desktop-memory-2.0.0.tgz
+dsh plugin add ./dsh-desktop-memory-3.0.0.tgz
 ```
 
 装完**重启 DSH**，在「设置 → 插件」里应该能看到「桌面记忆」这一页。
